@@ -6,6 +6,13 @@ MODIFIED to use a turn-by-turn training approach for better inference performanc
 
 import os
 os.environ['UNSLOTH_RETURN_LOGITS'] = '1'
+# The 20GB WSL VM cannot survive unsloth/TRL's default preprocessing worker
+# count (cpu_count()+4 = 36+ forked workers OOM the VM). They derive it from
+# multiprocessing.cpu_count at call time, so cap it here before any use.
+# 4 + 4 = 8 workers. Affects preprocessing parallelism only, not training math.
+import multiprocessing
+multiprocessing.cpu_count = lambda: 4
+os.cpu_count = lambda: 4
 import json
 import torch
 import argparse
@@ -182,34 +189,44 @@ def setup_model_and_tokenizer(model_name="unsloth/llama-3-8b-Instruct-bnb-4bit",
     return model, tokenizer
 
 
-def setup_training_args(output_dir="./ecg-dialogue-finetuned"):
+def setup_training_args(output_dir="./ecg-dialogue-finetuned", max_steps=None, eval_save_steps=1000,
+                        group_by_length=True):
     """Configure training arguments"""
-    return TrainingArguments(
+    args = TrainingArguments(
         per_device_train_batch_size=16,
         gradient_accumulation_steps=8,
         warmup_steps=10,
+        max_steps=max_steps if max_steps is not None else -1,
         num_train_epochs=3,  # Increase epochs since we'll stop early
         learning_rate=2e-4,
         fp16=not torch.cuda.is_bf16_supported(),
         bf16=torch.cuda.is_bf16_supported(),
         logging_steps=1,
         optim="adamw_8bit",
+        group_by_length=group_by_length,
         weight_decay=0.01,
         lr_scheduler_type="linear",
         seed=42,
         output_dir=output_dir,
         eval_strategy="steps",      # Check validation loss during training
-        eval_steps=1000,                    # How often to check (e.g., every 20 steps)
+        eval_steps=eval_save_steps,         # How often to check (e.g., every 20 steps)
         save_strategy="steps",            # Save strategy should match evaluation strategy
-        save_steps=1000,
+        save_steps=eval_save_steps,
         load_best_model_at_end=True,      # Load the best model when training ends
         metric_for_best_model="loss",     # Use validation loss to determine the best model
         save_total_limit=2,               # Save the best and the latest checkpoints
-        report_to="wandb" if 'WANDB_API_KEY' in os.environ else None,
+        report_to="wandb" if 'WANDB_API_KEY' in os.environ else "none",
         run_name="ecg-dialogue-finetune-turn-by-turn")
+    # Cap dataset preprocessing workers: the default (cpu count = 36) OOMs the
+    # 20GB WSL VM when another model runs inference concurrently. Set as an
+    # instance attribute because constructing SFTConfig after unsloth's model
+    # load trips its in-place '<EOS_TOKEN>' sentinel patch (TRL rejects it).
+    args.dataset_num_proc = 8
+    return args
 
 
-def main(model_name=None, max_seq_length=4096, output_dir=None):
+def main(model_name=None, max_seq_length=4096, output_dir=None, max_steps=None, eval_save_steps=1000, resume=False,
+         group_by_length=True):
     """Main training function"""
     os.environ['UNSLOTH_RETURN_LOGITS'] = '1'
     
@@ -226,7 +243,7 @@ def main(model_name=None, max_seq_length=4096, output_dir=None):
     # Capture all three datasets returned by the function
     train_dataset, validation_dataset, test_dataset = load_and_preprocess_dataset(tokenizer)
     
-    training_args = setup_training_args(output_dir)
+    training_args = setup_training_args(output_dir, max_steps, eval_save_steps, group_by_length)
     
     trainer = SFTTrainer(
         model=model,
@@ -236,8 +253,17 @@ def main(model_name=None, max_seq_length=4096, output_dir=None):
         callbacks=[EarlyStoppingCallback(early_stopping_patience=3)], # Add callback
     )
     
+    resume_from_checkpoint = None
+    if resume:
+        import glob
+        if glob.glob(os.path.join(output_dir, "checkpoint-*")):
+            resume_from_checkpoint = True
+            print(f"Resuming from latest checkpoint in {output_dir}")
+        else:
+            print("No checkpoint found; starting fresh")
+
     print("Starting training...")
-    trainer.train()
+    trainer.train(resume_from_checkpoint=resume_from_checkpoint)
     
     print("Saving final LoRA adapters...")
     trainer.save_model()
@@ -254,6 +280,11 @@ if __name__ == "__main__":
     parser.add_argument("--model", type=str, default="unsloth/Llama-3.2-3B-Instruct", help="Model to fine-tune.")
     parser.add_argument("--max-seq-length", type=int, default=4096, help="Maximum sequence length")
     parser.add_argument("--output-dir", type=str, default="./ecg-dialogue-finetune/Llama-3.2-3B-Instruct", help="Output directory for the fine-tuned model")
+    parser.add_argument("--max-steps", type=int, default=None, help="Optional cap on training steps (for quick smoke tests); default trains the full schedule")
+    parser.add_argument("--eval-save-steps", type=int, default=1000, help="Evaluate and checkpoint every N steps (lower = finer-grained resume)")
+    parser.add_argument("--resume", action="store_true", help="Resume from the latest checkpoint in --output-dir if one exists")
+    parser.add_argument("--no-group-by-length", dest="group_by_length", action="store_false", help="Disable length-grouped batching (upstream default)")
 
     args = parser.parse_args()
-    main(args.model, args.max_seq_length, args.output_dir)
+    main(args.model, args.max_seq_length, args.output_dir, args.max_steps, args.eval_save_steps, args.resume,
+         args.group_by_length)
