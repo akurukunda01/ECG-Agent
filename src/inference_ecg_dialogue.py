@@ -284,7 +284,7 @@ def build_aligned_turns(gt_dialogue, gen_dialogue):
 
 # ### MAIN ###
 # <<< CHANGED: Main function signature updated >>>
-def run_inference_on_test_set(base_model_path, adapter_path, output_file=None, max_samples=None, inference_mode='without_gt', filter_action=None):
+def run_inference_on_test_set(base_model_path, adapter_path, output_file=None, max_samples=None, inference_mode='without_gt', filter_action=None, resume=False):
     # <<< CHANGED: Pass the new paths to the loading function >>>
     model, tokenizer = load_model_and_tokenizer(base_model_path, adapter_path)
     gt_data = load_ground_truth_data()
@@ -333,9 +333,18 @@ def run_inference_on_test_set(base_model_path, adapter_path, output_file=None, m
         model_name_tag = os.path.basename(adapter_path) # Use adapter path for a unique name
         output_file = f"inference_{model_name_tag}_{timestamp}_{inference_mode}.jsonl"
 
+    # Resume support: skip samples already present in the output file
+    start_index = 0
+    if resume and os.path.exists(output_file):
+        with open(output_file, 'r', encoding='utf-8') as f_in:
+            start_index = sum(1 for _ in f_in)
+        if start_index > 0:
+            print(f"Resuming: {start_index} samples already in {output_file}, skipping them.")
+            dataset = dataset.select(range(start_index, len(dataset)))
+
     # Open once in append mode; append one JSONL line per sample and persist immediately
     with open(output_file, 'a', encoding='utf-8') as f_out:
-        for i, example in enumerate(tqdm(dataset, desc="Generating Dialogues")):
+        for i, example in enumerate(tqdm(dataset, desc="Generating Dialogues"), start=start_index):
             try:
                 gt_dialogue = json.loads(example['dialogue'])
                 ecg_files_str = example.get('ecg_files')
@@ -478,7 +487,12 @@ def parse_args():
         default=None,
         help="Optional. Only run inference on samples that contain this action in their ground-truth dialogue (e.g., 'response_fail')."
     )
-    
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Skip samples already present in --output-file and append from there."
+    )
+
     return parser.parse_args()
 
 if __name__ == "__main__":
@@ -491,4 +505,5 @@ if __name__ == "__main__":
         max_samples=args.max_samples,
         inference_mode=args.inference_mode,
         filter_action=args.filter_action, # <<< ADD THIS LINE
+        resume=args.resume,
     )
