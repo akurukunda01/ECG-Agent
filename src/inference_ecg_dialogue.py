@@ -88,12 +88,23 @@ def load_model_and_tokenizer(base_model_path, adapter_path):
 
     return model, tokenizer
 
+def normalize_ecg_filename(name):
+    """Canonicalize ECG filenames so padded and unpadded ids join reliably.
+    The HF dataset zero-pads record ids ('HR00056.mat') while the committed
+    summary CSVs use unpadded ids ('HR56.mat'); the exact-match join in
+    get_precomputed_tool_output silently misses on ~45% of records without
+    this."""
+    m = re.match(r'^HR0*(\d+)(?:\.mat)?$', str(name).strip())
+    return f"HR{m.group(1)}.mat" if m else str(name).strip()
+
 def load_ground_truth_data():
     """Loads pre-computed tool outputs (ground truth) from CSV files."""
     print("Loading ground-truth data from CSV files...")
     try:
         measurement_df = pd.read_csv(MEASUREMENT_SUMMARY_PATH)
         classification_df = pd.read_csv(CLASSIFICATION_SUMMARY_PATH)
+        for df in (measurement_df, classification_df):
+            df['ecg_file_path'] = df['ecg_file_path'].map(normalize_ecg_filename)
         print("✅ Successfully loaded all ground-truth summary CSVs.")
         return {
             "measurement": measurement_df,
@@ -111,6 +122,7 @@ def get_precomputed_tool_output(action, ecg_filename, gt_data):
     """Retrieves a pre-computed tool output from the loaded dataframes."""
     if not ecg_filename:
         return "[Error: ECG filename not provided]"
+    ecg_filename = normalize_ecg_filename(ecg_filename)
     try:
         if action == "call_classification_tool":
             df = gt_data["classification"]
