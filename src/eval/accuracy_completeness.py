@@ -35,7 +35,7 @@ class ECGDialogueEvaluator:
     MODELS = ['gemini', 'pulse', 'gem', 'llama_1b', 'llama_3b', 'llama_8b', 'Qwen3_32b']
     RESPONSE_CATEGORIES = ['post_classification', 'post_measurement', 'direct_response']
 
-    def __init__(self, api_key: Optional[str] = None, output_dir: str = 'evaluation_results', max_samples_per_category: Optional[int] = None):
+    def __init__(self, api_key: Optional[str] = None, output_dir: str = 'evaluation_results', max_samples_per_category: Optional[int] = None, common_ids_file: Optional[str] = None):
         """
         Initialize the evaluator.
         
@@ -44,15 +44,16 @@ class ECGDialogueEvaluator:
             output_dir: Output directory for saving results.
             max_samples_per_category: The maximum number of samples to evaluate PER CATEGORY.
         """
-        self.api_key = api_key or os.getenv('GOOGLE_API_KEY')
+        self.api_key = api_key or os.getenv('OPENROUTER_API_KEY')
         if not self.api_key:
-            logger.warning("No Google API key provided or found in environment. LLM-as-Judge evaluation will be skipped.")
+            logger.warning("No OpenRouter API key provided or found in environment (OPENROUTER_API_KEY). LLM-as-Judge evaluation will be skipped.")
         
         self.output_dir = output_dir
         os.makedirs(self.output_dir, exist_ok=True)
         
         # MODIFICATION: Changed attribute name for clarity
         self.max_samples_per_category = max_samples_per_category
+        self.common_ids_file = common_ids_file
         
         self.gemini_responses = []
         self.pulse_responses = []
@@ -131,7 +132,8 @@ class ECGDialogueEvaluator:
         random.seed(42)  # Ensure reproducible random sampling
 
         gemini_pulse_id_extractor = lambda r: str(json.loads(r['metadata'])['ecg_id'])
-        common_format_id_extractor = lambda r: re.search(r'(\d+)', r.get('ecg_file', '')).group(0) if re.search(r'(\d+)', r.get('ecg_file', '')) else None
+        # str(int(...)) strips zero-padding: 'HR00025.mat' -> '25', matching the GT dataset's unpadded ecg_id keys
+        common_format_id_extractor = lambda r: str(int(re.search(r'(\d+)', r.get('ecg_file', '')).group(0))) if re.search(r'(\d+)', r.get('ecg_file', '')) else None
 
         all_model_sources = [
             (self.gemini_responses, gemini_pulse_id_extractor, 'Gemini', lambda r: json.loads(r.get('dialogue', '{}'))),
@@ -145,8 +147,8 @@ class ECGDialogueEvaluator:
 
         loaded_sources = [(responses, id_ext, name, dlg_ext) for responses, id_ext, name, dlg_ext in all_model_sources if responses]
 
-        if len(loaded_sources) < 2:
-            logger.warning("Fewer than 2 model files loaded. Skipping common ID filtering.")
+        if not loaded_sources:
+            logger.warning("No model files loaded. Skipping common ID filtering.")
             return
 
         id_sets = []
@@ -163,6 +165,15 @@ class ECGDialogueEvaluator:
 
         common_ids = set.intersection(*id_sets)
         logger.info(f"Found {len(common_ids)} total common ECG IDs with responses across all models.")
+
+        if self.common_ids_file:
+            with open(self.common_ids_file) as f:
+                pinned = {line.strip() for line in f if line.strip()}
+            before = len(common_ids)
+            # Rebuild from a sorted list so set iteration order (and therefore the
+            # seeded sample) is identical no matter which model files were loaded.
+            common_ids = set(sorted(common_ids & pinned, key=int))
+            logger.info(f"Pinned to common-ID file ({len(pinned)} ids): {before} -> {len(common_ids)}")
 
         final_selected_ids = set()
 
@@ -237,7 +248,7 @@ class ECGDialogueEvaluator:
         """Load and categorize ground truth responses from the Hugging Face dataset."""
         logger.info("Loading ground truth from Hugging Face dataset")
         try:
-            dataset = load_dataset('gustmd0121/single-lead-I-ecg-mtd-dataset-gt-gemini-pro', split='train')
+            dataset = load_dataset('gustmd0121/12-lead-ecg-mtd-dataset-gt', split='test')
             self.ground_truth = {}
             for row in dataset:
                 try:
@@ -275,7 +286,8 @@ class ECGDialogueEvaluator:
                 except Exception as e:
                     logger.warning(f"Error processing {model_name} response for ECG ID {ecg_id if 'ecg_id' in locals() else 'unknown'}: {e}")
 
-        common_format_id_extractor = lambda r: re.search(r'(\d+)', r.get('ecg_file', '')).group(0) if re.search(r'(\d+)', r.get('ecg_file', '')) else None
+        # str(int(...)) strips zero-padding: 'HR00025.mat' -> '25', matching the GT dataset's unpadded ecg_id keys
+        common_format_id_extractor = lambda r: str(int(re.search(r'(\d+)', r.get('ecg_file', '')).group(0))) if re.search(r'(\d+)', r.get('ecg_file', '')) else None
 
         process_model_data(self.gemini_responses, 'gemini', None, lambda r: str(json.loads(r['metadata'])['ecg_id']))
         process_model_data(self.pulse_responses, 'pulse', None, lambda r: str(json.loads(r['metadata'])['ecg_id']))
@@ -350,11 +362,10 @@ class ECGDialogueEvaluator:
         """
         if not self.api_key or not self.ground_truth: return {}
         try:
-            import google.generativeai as genai
-            genai.configure(api_key=self.api_key)
-            model = genai.GenerativeModel('gemini-2.5-pro') # Updated model name
+            from judge_client import JudgeModel
+            model = JudgeModel()  # gemini-2.5-pro via OpenRouter
         except Exception as e:
-            logger.error(f"Error initializing Gemini model: {e}. Skipping tool response evaluation.")
+            logger.error(f"Error initializing judge model: {e}. Skipping tool response evaluation.")
             return {}
 
         results_filename = f'llm_eval_{category}.json'
@@ -453,11 +464,10 @@ class ECGDialogueEvaluator:
         """
         if not self.api_key or not self.ground_truth: return {}
         try:
-            import google.generativeai as genai
-            genai.configure(api_key=self.api_key)
-            model = genai.GenerativeModel('gemini-2.5-pro') # Updated model name
+            from judge_client import JudgeModel
+            model = JudgeModel()  # gemini-2.5-pro via OpenRouter
         except Exception as e:
-            logger.error(f"Error initializing Gemini model: {e}. Skipping direct response evaluation.")
+            logger.error(f"Error initializing judge model: {e}. Skipping direct response evaluation.")
             return {}
 
         results_filename = 'llm_eval_direct_response.json'
@@ -558,7 +568,6 @@ You are a medical expert evaluating an AI's ECG dialogue response. Compare the a
 
 **Context:**
 - ECG ID: {ecg_id}
-- Model: {model_name}
 - Response Category: {category}
 - Tool Output (provided to assistant): {response_data.get('tool_output', 'N/A')}
 - User's Question: {response_data.get('context', {}).get('user_query', '')}
@@ -598,7 +607,6 @@ You are a medical expert evaluating an AI's ECG dialogue response. Compare the a
 
 **Context:**
 - ECG ID: {ecg_id}
-- Model: {model_name}
 - Response Category: direct_response
 - User's Question/Previous Turn: {response_data.get('context', {}).get('user_query', '')}
 
@@ -633,8 +641,9 @@ Completeness Explanation: [justification]
         parsed_data = {}
         try:
             for criterion in criteria:
-                score_match = re.search(rf"^{criterion}:\s*(\d+)", response_text, re.IGNORECASE | re.MULTILINE)
-                explanation_match = re.search(rf"^{criterion} Explanation:\s*(.*)", response_text, re.IGNORECASE | re.MULTILINE)
+                # \W* tolerates markdown wrapping (e.g. "**Accuracy: 4**") that some judge models emit
+                score_match = re.search(rf"^\W*{criterion}\W*?(\d+)", response_text, re.IGNORECASE | re.MULTILINE)
+                explanation_match = re.search(rf"^\W*{criterion} Explanation\W*?([^\n]*)", response_text, re.IGNORECASE | re.MULTILINE)
                 
                 score = int(score_match.group(1)) if score_match else None
                 justification = explanation_match.group(1).strip() if explanation_match else "No justification found."
@@ -767,6 +776,8 @@ def main():
         help='The maximum number of randomly selected common samples to evaluate for EACH category.'
     )
 
+    parser.add_argument('--common_ids_file', type=str, default=None,
+                        help='Optional file of ECG IDs (one per line); the common-ID pool is intersected with it before sampling, making the seeded sample independent of which model files are loaded.')
     parser.add_argument('--skip_post_classification', action='store_true',
                         help='Skip evaluating post-classification responses.')   
 
@@ -793,7 +804,7 @@ def main():
             sys.exit(1)
 
     # --- MODIFIED: Use args.output_dir from parser ---
-    evaluator = ECGDialogueEvaluator(output_dir=args.output_dir, max_samples_per_category=args.max_samples_per_category)
+    evaluator = ECGDialogueEvaluator(output_dir=args.output_dir, max_samples_per_category=args.max_samples_per_category, common_ids_file=args.common_ids_file)
     
     if not evaluator.load_data(**model_files):
         logger.error("Failed to load data files. Exiting.")

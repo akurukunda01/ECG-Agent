@@ -1,11 +1,14 @@
 import json
 import os
+import re
 import time
 import argparse  # Using argparse
-# You will need to install the google-generativeai and tqdm libraries
-# pip install google-generativeai tqdm
-import google.generativeai as genai
+# You will need to install the openai and tqdm libraries
+# pip install openai tqdm
+from judge_client import JudgeModel
 from tqdm import tqdm
+
+_judge_model = None  # lazy singleton so we don't rebuild the client per call
 
 def evaluate_with_gemini(tool_output: str, response_content: str) -> int:
     """
@@ -19,17 +22,17 @@ def evaluate_with_gemini(tool_output: str, response_content: str) -> int:
     Returns:
         1 if the response is faithful, 0 otherwise.
     """
-    # 1. Configure the Gemini API using the environment variable
+    # 1. Initialize the judge (gemini-2.5-pro via OpenRouter)
+    global _judge_model
     try:
-        api_key = os.environ.get("GOOGLE_API_KEY")
-        if not api_key:
-            print("Error: GOOGLE_API_KEY environment variable not set.")
+        if not os.environ.get("OPENROUTER_API_KEY"):
+            print("Error: OPENROUTER_API_KEY environment variable not set.")
             return 0
-        genai.configure(api_key=api_key)
-        # Using a current, robust model name
-        model = genai.GenerativeModel('gemini-2.5-pro')
+        if _judge_model is None:
+            _judge_model = JudgeModel()
+        model = _judge_model
     except Exception as e:
-        print(f"Error configuring the Gemini API: {e}")
+        print(f"Error configuring the judge API: {e}")
         return 0
 
     prompt = f"""
@@ -64,7 +67,12 @@ def evaluate_with_gemini(tool_output: str, response_content: str) -> int:
         try:
             response = model.generate_content(prompt)
             if response.parts:
-                return int(response.text.strip())
+                # Tolerate markdown/punctuation around the digit (e.g. "**1**", "1.")
+                m = re.search(r'[01]', response.text)
+                if m:
+                    return int(m.group())
+                print(f"Warning: could not find 0/1 in judge reply: {response.text[:80]!r}. Scoring as 0.")
+                return 0
             else:
                 print(f"Warning: Received an empty response. Finish reason: {response.candidates[0].finish_reason}. Scoring as 0.")
                 return 0

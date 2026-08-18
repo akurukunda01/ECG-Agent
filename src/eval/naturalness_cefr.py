@@ -26,9 +26,9 @@ class DialogueQualityEvaluator:
         """
         Initializes the dialogue quality evaluator.
         """
-        self.api_key = api_key or os.getenv('GOOGLE_API_KEY')
+        self.api_key = api_key or os.getenv('OPENROUTER_API_KEY')
         if not self.api_key:
-            logger.error("A Google API key is required. Please set the GOOGLE_API_KEY environment variable.")
+            logger.error("An OpenRouter API key is required. Please set the OPENROUTER_API_KEY environment variable.")
             sys.exit(1)
         
         self.output_dir = output_dir
@@ -74,7 +74,7 @@ class DialogueQualityEvaluator:
         """Loads CEFR levels from the Hugging Face dataset."""
         logger.info("Loading CEFR levels from Hugging Face dataset...")
         try:
-            dataset = load_dataset('gustmd0121/single-lead-II-ecg-mtd-dataset-gt-gemini-pro', split='train')
+            dataset = load_dataset('gustmd0121/12-lead-ecg-mtd-dataset-gt', split='test')
             for row in dataset:
                 try:
                     metadata = json.loads(row['metadata'])
@@ -96,10 +96,11 @@ class DialogueQualityEvaluator:
             'gemini': lambda r: str(json.loads(r['metadata'])['ecg_id']),
             'pulse': lambda r: str(json.loads(r['metadata'])['ecg_id']),
             'gem': lambda r: str(json.loads(r['metadata'])['ecg_id']),
-            'llama_1b': lambda r: re.search(r'(\d+)', r.get('ecg_file', '')).group(0),
-            'llama_3b': lambda r: re.search(r'(\d+)', r.get('ecg_file', '')).group(0),
-            'llama_8b': lambda r: re.search(r'(\d+)', r.get('ecg_file', '')).group(0),
-            'Qwen3_32b': lambda r: re.search(r'(\d+)', r.get('ecg_file', '')).group(0),
+            # str(int(...)) strips zero-padding: 'HR00025.mat' -> '25', matching the GT dataset's unpadded ecg_id keys
+            'llama_1b': lambda r: str(int(re.search(r'(\d+)', r.get('ecg_file', '')).group(0))),
+            'llama_3b': lambda r: str(int(re.search(r'(\d+)', r.get('ecg_file', '')).group(0))),
+            'llama_8b': lambda r: str(int(re.search(r'(\d+)', r.get('ecg_file', '')).group(0))),
+            'Qwen3_32b': lambda r: str(int(re.search(r'(\d+)', r.get('ecg_file', '')).group(0))),
         }
 
         id_sets = []
@@ -240,11 +241,10 @@ CEFR Adherence Justification: [one-sentence justification]
         logger.info("🚀 Starting Dialogue Quality Evaluation...")
         
         try:
-            import google.generativeai as genai
-            genai.configure(api_key=self.api_key)
-            self.evaluator_model = genai.GenerativeModel('gemini-2.5-pro')
+            from judge_client import JudgeModel
+            self.evaluator_model = JudgeModel()  # gemini-2.5-pro via OpenRouter
         except Exception as e:
-            logger.error(f"Failed to initialize Gemini model: {e}")
+            logger.error(f"Failed to initialize judge model: {e}")
             return None
 
         results_filename = 'llm_eval_dialogue_quality.json'
@@ -274,10 +274,11 @@ CEFR Adherence Justification: [one-sentence justification]
             'gemini': lambda r: str(json.loads(r['metadata'])['ecg_id']),
             'pulse': lambda r: str(json.loads(r['metadata'])['ecg_id']),
             'gem': lambda r: str(json.loads(r['metadata'])['ecg_id']),
-            'llama_1b': lambda r: re.search(r'(\d+)', r.get('ecg_file', '')).group(0),
-            'llama_3b': lambda r: re.search(r'(\d+)', r.get('ecg_file', '')).group(0),
-            'llama_8b': lambda r: re.search(r'(\d+)', r.get('ecg_file', '')).group(0),
-            'Qwen3_32b': lambda r: re.search(r'(\d+)', r.get('ecg_file', '')).group(0),
+            # str(int(...)) strips zero-padding: 'HR00025.mat' -> '25', matching the GT dataset's unpadded ecg_id keys
+            'llama_1b': lambda r: str(int(re.search(r'(\d+)', r.get('ecg_file', '')).group(0))),
+            'llama_3b': lambda r: str(int(re.search(r'(\d+)', r.get('ecg_file', '')).group(0))),
+            'llama_8b': lambda r: str(int(re.search(r'(\d+)', r.get('ecg_file', '')).group(0))),
+            'Qwen3_32b': lambda r: str(int(re.search(r'(\d+)', r.get('ecg_file', '')).group(0))),
         }
         
         for model_name, data in self.model_data.items():
@@ -365,15 +366,24 @@ CEFR Adherence Justification: [one-sentence justification]
                     continue
                 
                 if 'naturalness' in scores and 'cefr_adherence' in scores:
-                    summary[model_name]['naturalness'].append(scores['naturalness']['score'])
-                    summary[model_name]['cefr_adherence'].append(scores['cefr_adherence']['score'])
+                    try:
+                        nat_score = scores['naturalness']['score']
+                        cefr_score = scores['cefr_adherence']['score']
+                    except (KeyError, TypeError):
+                        # Judge returned partial/malformed JSON (missing nested 'score') — count as an error, don't crash
+                        summary[model_name]['errors'] += 1
+                        continue
+                    summary[model_name]['naturalness'].append(nat_score)
+                    summary[model_name]['cefr_adherence'].append(cefr_score)
                     summary[model_name]['count'] += 1
+                else:
+                    summary[model_name]['errors'] += 1
         
         report_lines = [
             "# Dialogue Quality Evaluation Report",
             f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n",
             "This report summarizes the average scores for dialogue naturalness and CEFR level adherence.",
-            f"Total dialogues evaluated per model: {summary[self.MODELS[0]]['count']}\n",
+            f"Total dialogues evaluated per model: {max(s['count'] for s in summary.values())}\n",
             "| Model         | Avg Naturalness | Avg CEFR Adherence | Valid Evals | Errors |",
             "|---------------|-----------------|--------------------|-------------|--------|"
         ]
