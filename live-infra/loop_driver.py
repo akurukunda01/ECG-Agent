@@ -17,8 +17,9 @@ from medrax.tools.classification import ECGClassifierTool, ECGAnalysisTool
 
 # --- Constants for external data paths (update if necessary) ---
 
-MEASUREMENT_SUMMARY_PATH = "./results/ecg_analysis_measurements.csv"
-CLASSIFICATION_SUMMARY_PATH = "./results/ecg_analysis_classification.csv"
+CLASSIFIER_CHECKPOINT_PATH = os.path.expanduser("~/data/ptbxl/ckpt_diagnosis/checkpoint_best.pt")
+ECG_DIR = os.path.expanduser("~/data/ptbxl/ptbxl_10s_padded")
+PROBABILITY_THRESHOLD = 0.5
 
 # CORRECTED Master Evaluation Prompt
 ECG_EVALUATION_PROMPT = """
