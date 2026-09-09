@@ -119,25 +119,29 @@ def load_ground_truth_data():
         print(f"🛑 An error occurred while loading tools: {e}")
         sys.exit(1)
 
-def get_precomputed_tool_output(action, ecg_filename, gt_data):
-    """Retrieves a pre-computed tool output from the loaded dataframes."""
+def get_live_tool_output(action, ecg_filename, gt_data):
+    """Runs the requested tool on the ECG file and formats its output."""
     if not ecg_filename:
         return "[Error: ECG filename not provided]"
-    ecg_filename = normalize_ecg_filename(ecg_filename)
+    ecg_path = os.path.join(ECG_DIR, ecg_filename)
     try:
         if action == "call_classification_tool":
-            df = gt_data["classification"]
-            record = df[df['ecg_file_path'] == ecg_filename]
-            if record.empty:
-                return "[]"
-            top_classes_val = record['top_classes'].iloc[0]
+            tool = gt_data["classification"]
+            outputs, _ = tool._run(ecg_path=ecg_path)
+            if outputs and "error" not in outputs:
+                filtered_classes = {label: prob for label, prob in outputs.items() if prob > PROBABILITY_THRESHOLD}
+                sorted_classes = sorted(filtered_classes.items(), key=lambda item: item[1], reverse=True)
+                if sorted_classes:
+                    top_classes_val = ", ".join([f"{label} ({prob:.2%})" for label, prob in sorted_classes])
+                else:
+                    top_classes_val = f"None > {PROBABILITY_THRESHOLD:.0%}"
+            else:
+                top_classes_val = "Classification Error"
             return str([c.strip() for c in top_classes_val.split(',')]) if pd.notna(top_classes_val) else "[]"
         elif action == "call_measurement_tool":
-            df = gt_data["measurement"]
-            record = df[df['ecg_file_path'] == ecg_filename]
-            if record.empty:
-                return "{}"
-            rec = record.iloc[0]
+            tool = gt_data["measurement"]
+            outputs = tool._run(ecg_path=ecg_path)
+            rec = outputs if (outputs and "error" not in outputs) else {}
             measurements = {
                 "heart_rate": f"{rec.get('Heart_Rate'):.2f}" if pd.notna(rec.get('Heart_Rate')) else None,
                 "pr_interval": f"{rec.get('PR_Interval_ms'):.0f}" if pd.notna(rec.get('PR_Interval_ms')) else None,
@@ -386,7 +390,7 @@ def run_inference_on_test_set(base_model_path, adapter_path, output_file=None, m
                                 "role": "assistant",
                                 "action": parsed_turn['action'],
                                 "thought": parsed_turn['thought'],
-                                "tool_output": get_precomputed_tool_output(parsed_turn['action'], ecg_filename, gt_data)
+                                "tool_output": get_live_tool_output(parsed_turn['action'], ecg_filename, gt_data)
                             }
                             model_generated_turns_for_this_user_prompt.append(tool_call_turn)
 
