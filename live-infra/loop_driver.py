@@ -101,24 +101,22 @@ def normalize_ecg_filename(name):
     return f"HR{m.group(1)}.mat" if m else str(name).strip()
 
 def load_ground_truth_data():
-    """Loads pre-computed tool outputs (ground truth) from CSV files."""
-    print("Loading ground-truth data from CSV files...")
+    """Instantiates the live tools (classifier from checkpoint, neurokit2 measurement)."""
+    print("Loading live tools...")
     try:
-        measurement_df = pd.read_csv(MEASUREMENT_SUMMARY_PATH)
-        classification_df = pd.read_csv(CLASSIFICATION_SUMMARY_PATH)
-        for df in (measurement_df, classification_df):
-            df['ecg_file_path'] = df['ecg_file_path'].map(normalize_ecg_filename)
-        print("✅ Successfully loaded all ground-truth summary CSVs.")
+        classification_tool = ECGClassifierTool(model_path=CLASSIFIER_CHECKPOINT_PATH)
+        measurement_tool = ECGAnalysisTool()
+        print("✅ Successfully loaded live tools.")
         return {
-            "measurement": measurement_df,
-            "classification": classification_df
+            "measurement": measurement_tool,
+            "classification": classification_tool
         }
     except FileNotFoundError as e:
-        print(f"🛑 Error: Could not find a CSV file. Please check your paths.")
+        print(f"🛑 Error: Could not find the classifier checkpoint. Please check your paths.")
         print(f"Details: {e}")
         sys.exit(1)
     except Exception as e:
-        print(f"🛑 An error occurred while loading CSV files: {e}")
+        print(f"🛑 An error occurred while loading tools: {e}")
         sys.exit(1)
 
 def get_precomputed_tool_output(action, ecg_filename, gt_data):
