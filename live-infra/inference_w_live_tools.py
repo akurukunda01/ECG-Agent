@@ -14,6 +14,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig
 from peft import PeftModel # <<< NEW: Import PeftModel
 sys.path.insert(0, os.getcwd())
 from medrax.tools.classification import ECGClassifierTool, ECGAnalysisTool
+from events import Event
 from loop import ECG_EVALUATION_PROMPT, load_model_and_tokenizer, load_ground_truth_data, get_live_tool_output, parse_generated_response, generate_full_response, format_assistant_turn_for_messages, run_user_turn, make_generation_config
 
 def normalize_ecg_filename(name):
@@ -84,8 +85,9 @@ def run_inference_on_test_set(base_model_path, adapter_path, output_file=None, m
     # <<< CHANGED: Pass the new paths to the loading function >>>
     model, tokenizer = load_model_and_tokenizer(base_model_path, adapter_path)
     gt_data = load_ground_truth_data()
-    tools = lambda action, ecg_handle: get_live_tool_output(action, ecg_handle, gt_data)
-    emit = lambda _event: None
+    sample_events = []
+    emit = lambda event: sample_events.append(event)
+    tools = lambda action, ecg_handle: get_live_tool_output(action, ecg_handle, gt_data, emit)
 
     generation_config = make_generation_config(tokenizer)
 
@@ -131,8 +133,9 @@ def run_inference_on_test_set(base_model_path, adapter_path, output_file=None, m
             dataset = dataset.select(range(start_index, len(dataset)))
 
     # Open once in append mode; append one JSONL line per sample and persist immediately
-    with open(output_file, 'a', encoding='utf-8') as f_out:
+    with open(output_file, 'a', encoding='utf-8') as f_out, open(output_file + ".events.jsonl", 'a', encoding='utf-8') as f_events:
         for i, example in enumerate(tqdm(dataset, desc="Generating Dialogues"), start=start_index):
+            sample_events.clear()
             try:
                 gt_dialogue = json.loads(example['dialogue'])
                 ecg_files_str = example.get('ecg_files')
@@ -179,6 +182,8 @@ def run_inference_on_test_set(base_model_path, adapter_path, output_file=None, m
                 f_out.write(json.dumps(record, ensure_ascii=False) + "\n")
                 f_out.flush()
                 os.fsync(f_out.fileno())
+                f_events.write(json.dumps({"sample_id": i, "events": [{"type": e.type, "value": e.value} for e in sample_events]}, ensure_ascii=False, default=str) + "\n")
+                f_events.flush()
 
             except Exception as e:
                 import traceback

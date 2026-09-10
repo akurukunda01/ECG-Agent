@@ -9,6 +9,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig
 from peft import PeftModel # <<< NEW: Import PeftModel
 sys.path.insert(0, os.getcwd())
 from medrax.tools.classification import ECGClassifierTool, ECGAnalysisTool
+from events import Event, Emitter, render
 
 # --- Constants for external data paths (update if necessary) ---
 
@@ -105,7 +106,7 @@ def load_ground_truth_data():
         print(f"🛑 An error occurred while loading tools: {e}")
         sys.exit(1)
 
-def get_live_tool_output(action, ecg_filename, gt_data):
+def get_live_tool_output(action, ecg_filename, gt_data, emit=lambda _event: None):
     """Runs the requested tool on the ECG file and formats its output."""
     if not ecg_filename:
         return "[Error: ECG filename not provided]"
@@ -114,6 +115,7 @@ def get_live_tool_output(action, ecg_filename, gt_data):
         if action == "call_classification_tool":
             tool = gt_data["classification"]
             outputs, _ = tool._run(ecg_path=ecg_path)
+            emit(Event("tool_return", outputs))
             if outputs and "error" not in outputs:
                 filtered_classes = {label: prob for label, prob in outputs.items() if prob > PROBABILITY_THRESHOLD}
                 sorted_classes = sorted(filtered_classes.items(), key=lambda item: item[1], reverse=True)
@@ -127,6 +129,7 @@ def get_live_tool_output(action, ecg_filename, gt_data):
         elif action == "call_measurement_tool":
             tool = gt_data["measurement"]
             outputs = tool._run(ecg_path=ecg_path)
+            emit(Event("tool_return", outputs))
             rec = outputs if (outputs and "error" not in outputs) else {}
             measurements = {
                 "heart_rate": f"{rec.get('Heart_Rate'):.2f}" if pd.notna(rec.get('Heart_Rate')) else None,
@@ -242,24 +245,32 @@ def run_user_turn(model, tokenizer, gen_cfg, messages, user_text, ecg_handle, to
 
     # First assistant step
     model_output_str = generate_full_response(model, tokenizer, messages, gen_cfg)
+    emit(Event("generation", model_output_str))
     parsed_turn = parse_generated_response(model_output_str)
+    emit(Event("parse", parsed_turn))
+    emit(Event("action", parsed_turn['action']))
 
     model_generated_turns_for_this_user_prompt = []
 
     # Tool call or direct response?
     if parsed_turn['action'] in ["call_classification_tool", "call_measurement_tool"]:
+        emit(Event("tool_call", (parsed_turn['action'], ecg_handle)))
         tool_call_turn = {
             "role": "assistant",
             "action": parsed_turn['action'],
             "thought": parsed_turn['thought'],
             "tool_output": tools(parsed_turn['action'], ecg_handle)
         }
+        emit(Event("observation_rendered", tool_call_turn["tool_output"]))
         model_generated_turns_for_this_user_prompt.append(tool_call_turn)
 
         # Final response using tool output
         messages.append({"role": "assistant", "content": format_assistant_turn_for_messages(tool_call_turn)})
         final_content_str = generate_full_response(model, tokenizer, messages, gen_cfg)
+        emit(Event("generation", final_content_str))
         parsed_final_turn = parse_generated_response(final_content_str)
+        emit(Event("parse", parsed_final_turn))
+        emit(Event("action", parsed_final_turn.get("action", "response")))
 
         response_turn = {
             "role": "assistant",
@@ -267,6 +278,7 @@ def run_user_turn(model, tokenizer, gen_cfg, messages, user_text, ecg_handle, to
             "thought": parsed_final_turn.get("thought", "No thought generated."), # Provide a descriptive default thought.
             "content": parsed_final_turn.get("content", "") # The only part we truly need from the model's second output.
         }
+        emit(Event("response", response_turn))
         model_generated_turns_for_this_user_prompt.append(response_turn)
     else:
         direct_response_turn = {
@@ -275,6 +287,7 @@ def run_user_turn(model, tokenizer, gen_cfg, messages, user_text, ecg_handle, to
             "thought": parsed_turn['thought'],
             "content": parsed_turn.get("content", "")
         }
+        emit(Event("response", direct_response_turn))
         model_generated_turns_for_this_user_prompt.append(direct_response_turn)
 
     # Update history
@@ -301,9 +314,10 @@ def make_generation_config(tokenizer):
     return generation_config
 
 
-class Session:
+class Session(Emitter):
     """Conversation state that outlives a single input() call."""
-    def __init__(self):
+    def __init__(self, observer=None):
+        super().__init__(observer)
         self.messages = [{"role": "system", "content": ECG_EVALUATION_PROMPT}]
         self.ecg_handle = None
         self.turn_count = 0
@@ -319,11 +333,16 @@ def main():
 
     model, tokenizer = load_model_and_tokenizer(args.base_model_path, args.adapter_path)
     gt_data = load_ground_truth_data()
-    tools = lambda action, ecg_handle: get_live_tool_output(action, ecg_handle, gt_data)
-    emit = lambda _event: None
     generation_config = make_generation_config(tokenizer)
-    session = Session()
+
+    def observer(event):
+        session.event_log.append(event)
+        render(event)
+
+    session = Session(observer)
     session.ecg_handle = args.ecg
+    emit = lambda event: session._emit(event)
+    tools = lambda action, ecg_handle: get_live_tool_output(action, ecg_handle, gt_data, emit)
     print("Ready. Ctrl-D to exit.")
 
     while True:
@@ -333,10 +352,8 @@ def main():
             break
         if not text:
             continue
-        turns = run_user_turn(model, tokenizer, generation_config, session.messages, text, session.ecg_handle, tools, emit)
+        run_user_turn(model, tokenizer, generation_config, session.messages, text, session.ecg_handle, tools, emit)
         session.turn_count += 1
-        for turn in turns:
-            print(format_assistant_turn_for_messages(turn))
 
 
 if __name__ == "__main__":
