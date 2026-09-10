@@ -188,6 +188,9 @@ def run_inference_on_test_set(base_model_path, adapter_path, output_file=None, m
             except Exception as e:
                 import traceback
                 print(f"Error processing sample {i} (ECG: {ecg_filename}): {e}\n{traceback.format_exc()}")
+                emit(Event("error", str(e)))
+                f_events.write(json.dumps({"sample_id": i, "events": [{"type": e.type, "value": e.value} for e in sample_events]}, ensure_ascii=False, default=str) + "\n")
+                f_events.flush()
 
     print(f"Inference complete. Results appended to {output_file}")
 

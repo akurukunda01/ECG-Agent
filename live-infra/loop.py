@@ -139,7 +139,8 @@ def get_live_tool_output(action, ecg_filename, gt_data, emit=lambda _event: None
             }
             return json.dumps(measurements)
             return "[]"
-    except Exception:
+    except Exception as error:
+        emit(Event("error", str(error)))
         return f"[Error: Failed to retrieve data for {ecg_filename}]"
     return "[Error: Unknown tool action]"
 
@@ -352,8 +353,13 @@ def main():
             break
         if not text:
             continue
-        run_user_turn(model, tokenizer, generation_config, session.messages, text, session.ecg_handle, tools, emit)
-        session.turn_count += 1
+        history_len = len(session.messages)
+        try:
+            run_user_turn(model, tokenizer, generation_config, session.messages, text, session.ecg_handle, tools, emit)
+            session.turn_count += 1
+        except Exception as error:
+            session._emit(Event("error", str(error)))
+            del session.messages[history_len:]
 
 
 if __name__ == "__main__":
