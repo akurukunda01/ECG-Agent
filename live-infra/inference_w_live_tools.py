@@ -14,7 +14,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig
 from peft import PeftModel # <<< NEW: Import PeftModel
 sys.path.insert(0, os.getcwd())
 from medrax.tools.classification import ECGClassifierTool, ECGAnalysisTool
-from loop import ECG_EVALUATION_PROMPT, load_model_and_tokenizer, load_ground_truth_data, get_live_tool_output, parse_generated_response, generate_full_response, format_assistant_turn_for_messages, run_user_turn
+from loop import ECG_EVALUATION_PROMPT, load_model_and_tokenizer, load_ground_truth_data, get_live_tool_output, parse_generated_response, generate_full_response, format_assistant_turn_for_messages, run_user_turn, make_generation_config
 
 def normalize_ecg_filename(name):
     """Canonicalize ECG filenames so padded and unpadded ids join reliably.
@@ -87,17 +87,7 @@ def run_inference_on_test_set(base_model_path, adapter_path, output_file=None, m
     tools = lambda action, ecg_handle: get_live_tool_output(action, ecg_handle, gt_data)
     emit = lambda _event: None
 
-    # Deterministic generation for eval
-    eot_id = tokenizer.convert_tokens_to_ids("<|eot_id|>")
-    eos_ids = [t for t in [tokenizer.eos_token_id, eot_id] if t is not None]
-    generation_config = GenerationConfig(
-        max_new_tokens=512,
-        temperature=0.0,
-        top_p=1.0,
-        do_sample=False,
-        eos_token_id=eos_ids or None,
-        pad_token_id=tokenizer.pad_token_id,
-    )
+    generation_config = make_generation_config(tokenizer)
 
     dataset = load_dataset("gustmd0121/12-lead-ecg-mtd-dataset")['test']
     if filter_action:

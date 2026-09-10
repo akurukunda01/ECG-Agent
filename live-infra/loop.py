@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import argparse
 import torch
 import re
 import pandas as pd
@@ -283,3 +284,60 @@ def run_user_turn(model, tokenizer, gen_cfg, messages, user_text, ecg_handle, to
         messages.append({"role": "assistant", "content": format_assistant_turn_for_messages(model_generated_turns_for_this_user_prompt[1])})
 
     return model_generated_turns_for_this_user_prompt
+
+def make_generation_config(tokenizer):
+    """Block moved verbatim from run_inference_on_test_set."""
+    # Deterministic generation for eval
+    eot_id = tokenizer.convert_tokens_to_ids("<|eot_id|>")
+    eos_ids = [t for t in [tokenizer.eos_token_id, eot_id] if t is not None]
+    generation_config = GenerationConfig(
+        max_new_tokens=512,
+        temperature=0.0,
+        top_p=1.0,
+        do_sample=False,
+        eos_token_id=eos_ids or None,
+        pad_token_id=tokenizer.pad_token_id,
+    )
+    return generation_config
+
+
+class Session:
+    """Conversation state that outlives a single input() call."""
+    def __init__(self):
+        self.messages = [{"role": "system", "content": ECG_EVALUATION_PROMPT}]
+        self.ecg_handle = None
+        self.turn_count = 0
+        self.event_log = []
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Interactive ECG-Agent session with live tools. Run from src/.")
+    parser.add_argument("--base-model-path", type=str, required=True)
+    parser.add_argument("--adapter-path", type=str, required=True)
+    parser.add_argument("--ecg", type=str, default=None, help="ECG filename under ECG_DIR, e.g. HR00056.mat.")
+    args = parser.parse_args()
+
+    model, tokenizer = load_model_and_tokenizer(args.base_model_path, args.adapter_path)
+    gt_data = load_ground_truth_data()
+    tools = lambda action, ecg_handle: get_live_tool_output(action, ecg_handle, gt_data)
+    emit = lambda _event: None
+    generation_config = make_generation_config(tokenizer)
+    session = Session()
+    session.ecg_handle = args.ecg
+    print("Ready. Ctrl-D to exit.")
+
+    while True:
+        try:
+            text = input("> ").strip()
+        except EOFError:
+            break
+        if not text:
+            continue
+        turns = run_user_turn(model, tokenizer, generation_config, session.messages, text, session.ecg_handle, tools, emit)
+        session.turn_count += 1
+        for turn in turns:
+            print(format_assistant_turn_for_messages(turn))
+
+
+if __name__ == "__main__":
+    main()
