@@ -230,3 +230,56 @@ def format_assistant_turn_for_messages(turn):
         assistant_content += f"Content: {turn.get('content', '')}"
 
     return assistant_content.strip()
+
+def run_user_turn(model, tokenizer, gen_cfg, messages, user_text, ecg_handle, tools, emit):
+    """One user turn: append the user message, run the two-generate turn shape,
+    append the final assistant turn to `messages` (mutated in place), and return
+    the generated assistant turn dicts. Body moved from run_inference_on_test_set."""
+    # Add user turn
+    user_turn = {"role": "user", "content": user_text}
+    messages.append(user_turn)
+
+    # First assistant step
+    model_output_str = generate_full_response(model, tokenizer, messages, gen_cfg)
+    parsed_turn = parse_generated_response(model_output_str)
+
+    model_generated_turns_for_this_user_prompt = []
+
+    # Tool call or direct response?
+    if parsed_turn['action'] in ["call_classification_tool", "call_measurement_tool"]:
+        tool_call_turn = {
+            "role": "assistant",
+            "action": parsed_turn['action'],
+            "thought": parsed_turn['thought'],
+            "tool_output": tools(parsed_turn['action'], ecg_handle)
+        }
+        model_generated_turns_for_this_user_prompt.append(tool_call_turn)
+
+        # Final response using tool output
+        messages.append({"role": "assistant", "content": format_assistant_turn_for_messages(tool_call_turn)})
+        final_content_str = generate_full_response(model, tokenizer, messages, gen_cfg)
+        parsed_final_turn = parse_generated_response(final_content_str)
+
+        response_turn = {
+            "role": "assistant",
+            "action": parsed_final_turn.get("action", "response"), 
+            "thought": parsed_final_turn.get("thought", "No thought generated."), # Provide a descriptive default thought.
+            "content": parsed_final_turn.get("content", "") # The only part we truly need from the model's second output.
+        }
+        model_generated_turns_for_this_user_prompt.append(response_turn)
+    else:
+        direct_response_turn = {
+            "role": "assistant",
+            "action": parsed_turn['action'],
+            "thought": parsed_turn['thought'],
+            "content": parsed_turn.get("content", "")
+        }
+        model_generated_turns_for_this_user_prompt.append(direct_response_turn)
+
+    # Update history
+    if len(model_generated_turns_for_this_user_prompt) == 1:
+        messages.append({"role": "assistant", "content": format_assistant_turn_for_messages(model_generated_turns_for_this_user_prompt[0])})
+    elif len(model_generated_turns_for_this_user_prompt) == 2:
+        messages.append({"role": "assistant", "content": format_assistant_turn_for_messages(model_generated_turns_for_this_user_prompt[1])})
+
+    return model_generated_turns_for_this_user_prompt

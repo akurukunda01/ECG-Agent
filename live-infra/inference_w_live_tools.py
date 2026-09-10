@@ -14,7 +14,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig
 from peft import PeftModel # <<< NEW: Import PeftModel
 sys.path.insert(0, os.getcwd())
 from medrax.tools.classification import ECGClassifierTool, ECGAnalysisTool
-from loop import ECG_EVALUATION_PROMPT, load_model_and_tokenizer, load_ground_truth_data, get_live_tool_output, parse_generated_response, generate_full_response, format_assistant_turn_for_messages
+from loop import ECG_EVALUATION_PROMPT, load_model_and_tokenizer, load_ground_truth_data, get_live_tool_output, parse_generated_response, generate_full_response, format_assistant_turn_for_messages, run_user_turn
 
 def normalize_ecg_filename(name):
     """Canonicalize ECG filenames so padded and unpadded ids join reliably.
@@ -84,6 +84,8 @@ def run_inference_on_test_set(base_model_path, adapter_path, output_file=None, m
     # <<< CHANGED: Pass the new paths to the loading function >>>
     model, tokenizer = load_model_and_tokenizer(base_model_path, adapter_path)
     gt_data = load_ground_truth_data()
+    tools = lambda action, ecg_handle: get_live_tool_output(action, ecg_handle, gt_data)
+    emit = lambda _event: None
 
     # Deterministic generation for eval
     eot_id = tokenizer.convert_tokens_to_ids("<|eot_id|>")
@@ -152,57 +154,11 @@ def run_inference_on_test_set(base_model_path, adapter_path, output_file=None, m
 
                 for turn in gt_dialogue:
                     if turn['role'] == 'user':
-                        # Add user turn
-                        user_turn = {"role": "user", "content": turn.get('content', '')}
-                        messages.append(user_turn)
                         generated_dialogue.append(turn)
-
-                        # First assistant step
-                        model_output_str = generate_full_response(model, tokenizer, messages, generation_config)
-                        parsed_turn = parse_generated_response(model_output_str)
-
-                        model_generated_turns_for_this_user_prompt = []
-
-                        # Tool call or direct response?
-                        if parsed_turn['action'] in ["call_classification_tool", "call_measurement_tool"]:
-                            tool_call_turn = {
-                                "role": "assistant",
-                                "action": parsed_turn['action'],
-                                "thought": parsed_turn['thought'],
-                                "tool_output": get_live_tool_output(parsed_turn['action'], ecg_filename, gt_data)
-                            }
-                            model_generated_turns_for_this_user_prompt.append(tool_call_turn)
-
-                            # Final response using tool output
-                            messages.append({"role": "assistant", "content": format_assistant_turn_for_messages(tool_call_turn)})
-                            final_content_str = generate_full_response(model, tokenizer, messages, generation_config)
-                            parsed_final_turn = parse_generated_response(final_content_str)
-
-                            response_turn = {
-                                "role": "assistant",
-                                "action": parsed_final_turn.get("action", "response"), 
-                                "thought": parsed_final_turn.get("thought", "No thought generated."), # Provide a descriptive default thought.
-                                "content": parsed_final_turn.get("content", "") # The only part we truly need from the model's second output.
-                            }
-                            model_generated_turns_for_this_user_prompt.append(response_turn)
-                        else:
-                            direct_response_turn = {
-                                "role": "assistant",
-                                "action": parsed_turn['action'],
-                                "thought": parsed_turn['thought'],
-                                "content": parsed_turn.get("content", "")
-                            }
-                            model_generated_turns_for_this_user_prompt.append(direct_response_turn)
-
-                        generated_dialogue.extend(model_generated_turns_for_this_user_prompt)
+                        generated_dialogue.extend(run_user_turn(model, tokenizer, generation_config, messages, turn.get('content', ''), ecg_filename, tools, emit))
 
                         # Update history
-                        if inference_mode == 'without_gt':
-                            if len(model_generated_turns_for_this_user_prompt) == 1:
-                                messages.append({"role": "assistant", "content": format_assistant_turn_for_messages(model_generated_turns_for_this_user_prompt[0])})
-                            elif len(model_generated_turns_for_this_user_prompt) == 2:
-                                messages.append({"role": "assistant", "content": format_assistant_turn_for_messages(model_generated_turns_for_this_user_prompt[1])})
-                        elif inference_mode == 'with_gt':
+                        if inference_mode == 'with_gt':
                             messages.pop()  # remove last user
                             if len(messages) > 1 and messages[-1]['role'] == 'assistant':
                                 messages.pop()
