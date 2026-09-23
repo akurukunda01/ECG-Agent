@@ -3,10 +3,13 @@ import sys
 import json
 import argparse
 import time
+import io
+import contextlib
 import torch
 import re
 import pandas as pd
 from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig
+from transformers.utils import logging as hf_logging
 from peft import PeftModel # <<< NEW: Import PeftModel
 sys.path.insert(0, os.getcwd())
 from tools import ECGClassifierTool, ECGAnalysisTool
@@ -332,8 +335,10 @@ def main():
     parser.add_argument("--base-model-path", type=str, default="unsloth/Qwen3-1.7B")
     parser.add_argument("--adapter-path", type=str, default="../ecg-dialogue-finetune/Qwen3-1.7B")
     parser.add_argument("--ecg", type=str, default="HR00056.mat", help="ECG filename under ECG_DIR, e.g. HR00056.mat.")
+    parser.add_argument("--trace", action="store_true", help="Print every event to the console, not just the assistant reply.")
     args = parser.parse_args()
 
+    hf_logging.set_verbosity_error()
     model, tokenizer = load_model_and_tokenizer(args.base_model_path, args.adapter_path)
     gt_data = load_ground_truth_data()
     generation_config = make_generation_config(tokenizer)
@@ -342,12 +347,25 @@ def main():
 
     def observer(event):
         session.event_log.append(event)
-        render(event)
+        if args.trace:
+            render(event)
+        elif event.type == "response":
+            print(event.value.get("content", ""))
+        elif event.type == "error":
+            render(event)
 
     session = Session(observer)
     session.ecg_handle = args.ecg
     emit = lambda event: session._emit(event)
-    tools = lambda action, ecg_handle: get_live_tool_output(action, ecg_handle, gt_data, emit)
+
+    def tools(action, ecg_handle):
+        captured = io.StringIO()
+        with (contextlib.nullcontext() if args.trace else contextlib.redirect_stdout(captured)):
+            output = get_live_tool_output(action, ecg_handle, gt_data, emit)
+        if captured.getvalue().strip():
+            emit(Event("tool_stdout", captured.getvalue().strip()))
+        return output
+
     print("Ready. Ctrl-D to exit.")
 
     while True:

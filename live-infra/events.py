@@ -32,6 +32,8 @@ def render(event: Event) -> None:
         print(f"[tool_return] {event.value}")
     elif event.type == "observation_rendered":
         print(f"[observation] {event.value}")
+    elif event.type == "tool_stdout":
+        print(f"[tool_stdout] {event.value}")
     elif event.type == "response":
         print(f"[response] {event.value}")
     elif event.type == "error":
