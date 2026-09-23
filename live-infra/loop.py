@@ -326,10 +326,10 @@ class Session(Emitter):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Interactive ECG-Agent session with live tools. Run from src/.")
-    parser.add_argument("--base-model-path", type=str, required=True)
-    parser.add_argument("--adapter-path", type=str, required=True)
-    parser.add_argument("--ecg", type=str, default=None, help="ECG filename under ECG_DIR, e.g. HR00056.mat.")
+    parser = argparse.ArgumentParser(description="Interactive ECG-Agent session with live tools")
+    parser.add_argument("--base-model-path", type=str, default="unsloth/Qwen3-1.7B")
+    parser.add_argument("--adapter-path", type=str, default="../ecg-dialogue-finetune/Qwen3-1.7B")
+    parser.add_argument("--ecg", type=str, default="HR00056.mat", help="ECG filename under ECG_DIR, e.g. HR00056.mat.")
     args = parser.parse_args()
 
     model, tokenizer = load_model_and_tokenizer(args.base_model_path, args.adapter_path)
