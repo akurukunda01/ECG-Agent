@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import argparse
+import time
 import torch
 import re
 import pandas as pd
@@ -10,6 +11,7 @@ from peft import PeftModel # <<< NEW: Import PeftModel
 sys.path.insert(0, os.getcwd())
 from tools import ECGClassifierTool, ECGAnalysisTool
 from events import Event, Emitter, render
+from transcript import Transcript
 
 # --- Constants for external data paths (update if necessary) ---
 
@@ -335,6 +337,8 @@ def main():
     model, tokenizer = load_model_and_tokenizer(args.base_model_path, args.adapter_path)
     gt_data = load_ground_truth_data()
     generation_config = make_generation_config(tokenizer)
+    transcript = Transcript(args.base_model_path, args.adapter_path, args.ecg, generation_config, ECG_EVALUATION_PROMPT)
+    print(f"Transcript: {transcript.path}.txt")
 
     def observer(event):
         session.event_log.append(event)
@@ -354,12 +358,22 @@ def main():
         if not text:
             continue
         history_len = len(session.messages)
+        event_start = len(session.event_log)
+        started = time.perf_counter()
         try:
             run_user_turn(model, tokenizer, generation_config, session.messages, text, session.ecg_handle, tools, emit)
             session.turn_count += 1
+            transcript.write_turn(session.turn_count, text, session.ecg_handle, session.event_log[event_start:],
+                                  session.messages[history_len:], time.perf_counter() - started,
+                                  history_len, len(session.messages))
         except Exception as error:
             session._emit(Event("error", str(error)))
+            transcript.write_turn(session.turn_count + 1, text, session.ecg_handle, session.event_log[event_start:],
+                                  session.messages[history_len:], time.perf_counter() - started,
+                                  history_len, history_len, error=str(error))
             del session.messages[history_len:]
+
+    transcript.close()
 
 
 if __name__ == "__main__":
