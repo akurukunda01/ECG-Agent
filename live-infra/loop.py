@@ -8,7 +8,7 @@ import pandas as pd
 from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig
 from peft import PeftModel # <<< NEW: Import PeftModel
 sys.path.insert(0, os.getcwd())
-from medrax.tools.classification import ECGClassifierTool, ECGAnalysisTool
+from tools import ECGClassifierTool, ECGAnalysisTool
 from events import Event, Emitter, render
 
 # --- Constants for external data paths (update if necessary) ---
