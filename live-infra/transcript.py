@@ -23,7 +23,7 @@ class Transcript:
                  system_prompt, directory=TRANSCRIPT_DIR):
         os.makedirs(directory, exist_ok=True)
         stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        adapter_name = os.path.basename(os.path.normpath(adapter_path))
+        adapter_name = os.path.basename(os.path.normpath(adapter_path)).replace(":", "_")
         self.path = os.path.join(directory, f"{stamp}_{adapter_name}")
         self.txt = open(self.path + ".txt", "a", encoding="utf-8")
         self.jsonl = open(self.path + ".jsonl", "a", encoding="utf-8")
@@ -33,7 +33,7 @@ class Transcript:
             "base_model_path": base_model_path,
             "adapter_path": adapter_path,
             "ecg": ecg_handle,
-            "generation_config": generation_config.to_dict(),
+            "generation_config": generation_config if isinstance(generation_config, dict) else generation_config.to_dict(),
             "loop_commit": loop_commit(),
             "system_prompt": system_prompt,
         }
