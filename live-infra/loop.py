@@ -21,6 +21,9 @@ from transcript import Transcript
 CLASSIFIER_CHECKPOINT_PATH = os.path.expanduser("~/data/ptbxl/ckpt_diagnosis/checkpoint_best.pt")
 ECG_DIR = os.path.expanduser("~/data/ptbxl/ptbxl_10s_padded")
 PROBABILITY_THRESHOLD = 0.5
+OPENROUTER_MODEL = None   # e.g. "qwen/qwen3.8-27b:free"; None = local model from the command-line flags
+RATE_LIMIT_WAIT_S = 60
+RATE_LIMIT_RETRIES = 30
 
 # CORRECTED Master Evaluation Prompt
 ECG_EVALUATION_PROMPT = """
@@ -225,6 +228,44 @@ def generate_full_response(model, tokenizer, messages, generation_config):
 
     return decoded_text.strip()
 
+def split_tool_output_messages(messages):
+    """For chat APIs: move each Tool_Output out of its assistant message into a following user message."""
+    out = []
+    for m in messages:
+        if m["role"] == "assistant" and "\nTool_Output: " in m["content"]:
+            head, tool_output = m["content"].split("\nTool_Output: ", 1)
+            out.append({"role": "assistant", "content": head})
+            out.append({"role": "user", "content": "Tool_Output: " + tool_output})
+        else:
+            out.append(m)
+    return out
+
+def generate_full_response_api(model, tokenizer, messages, generation_config):
+    """Same signature as loop.generate_full_response; sends the message list to OpenRouter."""
+    from openai import OpenAI, RateLimitError, APIError
+    for attempt in range(RATE_LIMIT_RETRIES):
+        try:
+            r = model.chat.completions.create(
+                model=generation_config["model"],
+                messages=split_tool_output_messages(messages),
+                max_tokens=generation_config["max_tokens"],
+                temperature=generation_config["temperature"],
+                top_p=generation_config["top_p"],
+            )
+            break
+        except RateLimitError:
+            print(f"[WAIT] rate limited; retrying in {RATE_LIMIT_WAIT_S}s ({attempt + 1}/{RATE_LIMIT_RETRIES})")
+            time.sleep(RATE_LIMIT_WAIT_S)
+        except APIError as error:
+            raise SystemExit(f"[STOP] API error: {error}")
+    else:
+        raise SystemExit("[STOP] still rate limited after all retries; run again later, resume continues from here")
+    if not r.choices:
+        return ""
+    if r.choices[0].finish_reason == "length":
+        print(f"[WARN] reply hit max_tokens ({generation_config['max_tokens']})")
+    return (r.choices[0].message.content or "").strip()
+
 def format_assistant_turn_for_messages(turn):
     """
     Formats an assistant turn into the string content for the message list.
@@ -381,11 +422,21 @@ def main():
     args = parser.parse_args()
 
     hf_logging.set_verbosity_error()
-    model, tokenizer = load_model_and_tokenizer(args.base_model_path, args.adapter_path)
+    if OPENROUTER_MODEL:
+        import getpass
+        from openai import OpenAI
+        if not os.environ.get("OPENROUTER_API_KEY"):
+            os.environ["OPENROUTER_API_KEY"] = getpass.getpass("OpenRouter API key: ")
+        client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=os.environ["OPENROUTER_API_KEY"], max_retries=5)
+        generation_config = {"model": OPENROUTER_MODEL, "max_tokens": 4096, "temperature": 0.0, "top_p": 1.0}
+        generate = lambda messages: generate_full_response_api(client, None, messages, generation_config)
+        transcript = Transcript("openrouter", OPENROUTER_MODEL, args.ecg, generation_config, ECG_EVALUATION_PROMPT)
+    else:
+        model, tokenizer = load_model_and_tokenizer(args.base_model_path, args.adapter_path)
+        generation_config = make_generation_config(tokenizer)
+        generate = lambda messages: generate_full_response(model, tokenizer, messages, generation_config)
+        transcript = Transcript(args.base_model_path, args.adapter_path, args.ecg, generation_config, ECG_EVALUATION_PROMPT)
     tools_list = load_tools()
-    generation_config = make_generation_config(tokenizer)
-    generate = lambda messages: generate_full_response(model, tokenizer, messages, generation_config)
-    transcript = Transcript(args.base_model_path, args.adapter_path, args.ecg, generation_config, ECG_EVALUATION_PROMPT)
     print(f"Transcript: {transcript.path}.txt")
 
     def observer(event):
