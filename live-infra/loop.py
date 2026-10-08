@@ -92,7 +92,7 @@ def load_model_and_tokenizer(base_model_path, adapter_path):
 
     return model, tokenizer
 
-def load_ground_truth_data():
+def load_tools():
     """Instantiates the live tools (classifier from checkpoint, neurokit2 measurement)."""
     print("Loading live tools...")
     try:
@@ -111,14 +111,14 @@ def load_ground_truth_data():
         print(f"🛑 An error occurred while loading tools: {e}")
         sys.exit(1)
 
-def get_live_tool_output(action, ecg_filename, gt_data, emit=lambda _event: None):
+def get_live_tool_output(action, ecg_filename, tools, emit=lambda _event: None):
     """Runs the requested tool on the ECG file and formats its output."""
     if not ecg_filename:
         return "[Error: ECG filename not provided]"
     ecg_path = os.path.join(ECG_DIR, ecg_filename)
     try:
         if action == "call_classification_tool":
-            tool = gt_data["classification"]
+            tool = tools["classification"]
             outputs, _ = tool._run(ecg_path=ecg_path)
             emit(Event("tool_return", outputs))
             if outputs and "error" not in outputs:
@@ -132,7 +132,7 @@ def get_live_tool_output(action, ecg_filename, gt_data, emit=lambda _event: None
                 top_classes_val = "Classification Error"
             return str([c.strip() for c in top_classes_val.split(',')]) if pd.notna(top_classes_val) else "[]"
         elif action == "call_measurement_tool":
-            tool = gt_data["measurement"]
+            tool = tools["measurement"]
             outputs = tool._run(ecg_path=ecg_path)
             emit(Event("tool_return", outputs))
             rec = outputs if (outputs and "error" not in outputs) else {}
@@ -340,7 +340,7 @@ def main():
 
     hf_logging.set_verbosity_error()
     model, tokenizer = load_model_and_tokenizer(args.base_model_path, args.adapter_path)
-    gt_data = load_ground_truth_data()
+    tools_list = load_tools()
     generation_config = make_generation_config(tokenizer)
     transcript = Transcript(args.base_model_path, args.adapter_path, args.ecg, generation_config, ECG_EVALUATION_PROMPT)
     print(f"Transcript: {transcript.path}.txt")
@@ -361,7 +361,7 @@ def main():
     def tools(action, ecg_handle):
         captured = io.StringIO()
         with (contextlib.nullcontext() if args.trace else contextlib.redirect_stdout(captured)):
-            output = get_live_tool_output(action, ecg_handle, gt_data, emit)
+            output = get_live_tool_output(action, ecg_handle, tools_list, emit)
         if captured.getvalue().strip():
             emit(Event("tool_stdout", captured.getvalue().strip()))
         return output

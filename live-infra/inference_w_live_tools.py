@@ -15,7 +15,7 @@ from peft import PeftModel # <<< NEW: Import PeftModel
 sys.path.insert(0, os.getcwd())
 from medrax.tools.classification import ECGClassifierTool, ECGAnalysisTool
 from events import Event
-from loop import ECG_EVALUATION_PROMPT, load_model_and_tokenizer, load_ground_truth_data, get_live_tool_output, parse_generated_response, generate_full_response, format_assistant_turn_for_messages, run_user_turn, make_generation_config
+from loop import ECG_EVALUATION_PROMPT, load_model_and_tokenizer, load_tools, get_live_tool_output, parse_generated_response, generate_full_response, format_assistant_turn_for_messages, run_user_turn, make_generation_config
 
 def normalize_ecg_filename(name):
     """Canonicalize ECG filenames so padded and unpadded ids join reliably.
@@ -84,7 +84,7 @@ def build_aligned_turns(gt_dialogue, gen_dialogue):
 def run_inference_on_test_set(base_model_path, adapter_path, output_file=None, max_samples=None, inference_mode='without_gt', filter_action=None, resume=False):
     # <<< CHANGED: Pass the new paths to the loading function >>>
     model, tokenizer = load_model_and_tokenizer(base_model_path, adapter_path)
-    gt_data = load_ground_truth_data()
+    gt_data = load_tools()
     sample_events = []
     emit = lambda event: sample_events.append(event)
     tools = lambda action, ecg_handle: get_live_tool_output(action, ecg_handle, gt_data, emit)
