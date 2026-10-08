@@ -1,6 +1,4 @@
-# Test 16: the 70 user messages where the zero-shot model differed from the reference
 
-Qwen3.8 27B (free, zero-shot) through OpenRouter with live tools, first 150 test dialogues, 496 user messages. Taken in full from `inference_qwen3.8-27b_free_openrouter.jsonl`; no reply is cut. Entry numbers match `mistakes_review.md` and `mistakes_by_cause.md` in the results folder.
 
 ## 1. Dialogue 2, user message 2 (HR00056.mat, Heart Rate Concerns)
 
