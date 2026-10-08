@@ -304,6 +304,44 @@ def run_user_turn(model, tokenizer, gen_cfg, messages, user_text, ecg_handle, to
 
     return model_generated_turns_for_this_user_prompt
 
+def run_user_turn_open(generate, messages, user_text, ecg_handle, tools, emit, max_tool_calls=3):
+    """One user turn with a tool loop: generate; while the action is a tool and the
+    cap is not reached, run the tool, append it, generate again. Same return shape
+    as run_user_turn. `generate` takes the message list and returns text."""
+    messages.append({"role": "user", "content": user_text})
+    turns = []
+
+    while True:
+        model_output_str = generate(messages)
+        emit(Event("generation", model_output_str))
+        parsed_turn = parse_generated_response(model_output_str)
+        emit(Event("parse", parsed_turn))
+        emit(Event("action", parsed_turn['action']))
+
+        if parsed_turn['action'] in ["call_classification_tool", "call_measurement_tool"] and len(turns) < max_tool_calls:
+            emit(Event("tool_call", (parsed_turn['action'], ecg_handle)))
+            tool_call_turn = {
+                "role": "assistant",
+                "action": parsed_turn['action'],
+                "thought": parsed_turn['thought'],
+                "tool_output": tools(parsed_turn['action'], ecg_handle),
+            }
+            emit(Event("observation_rendered", tool_call_turn["tool_output"]))
+            turns.append(tool_call_turn)
+            messages.append({"role": "assistant", "content": format_assistant_turn_for_messages(tool_call_turn)})
+            continue
+
+        response_turn = {
+            "role": "assistant",
+            "action": parsed_turn['action'],
+            "thought": parsed_turn['thought'],
+            "content": parsed_turn.get("content", ""),
+        }
+        emit(Event("response", response_turn))
+        turns.append(response_turn)
+        messages.append({"role": "assistant", "content": format_assistant_turn_for_messages(response_turn)})
+        return turns
+
 def make_generation_config(tokenizer):
     """Block moved verbatim from run_inference_on_test_set."""
     # Deterministic generation for eval
@@ -342,6 +380,7 @@ def main():
     model, tokenizer = load_model_and_tokenizer(args.base_model_path, args.adapter_path)
     tools_list = load_tools()
     generation_config = make_generation_config(tokenizer)
+    generate = lambda messages: generate_full_response(model, tokenizer, messages, generation_config)
     transcript = Transcript(args.base_model_path, args.adapter_path, args.ecg, generation_config, ECG_EVALUATION_PROMPT)
     print(f"Transcript: {transcript.path}.txt")
 
@@ -379,7 +418,7 @@ def main():
         event_start = len(session.event_log)
         started = time.perf_counter()
         try:
-            run_user_turn(model, tokenizer, generation_config, session.messages, text, session.ecg_handle, tools, emit)
+            run_user_turn_open(generate, session.messages, text, session.ecg_handle, tools, emit)
             session.turn_count += 1
             transcript.write_turn(session.turn_count, text, session.ecg_handle, session.event_log[event_start:],
                                   session.messages[history_len:], time.perf_counter() - started,
