@@ -36,5 +36,7 @@ def render(event: Event) -> None:
         print(f"[tool_stdout] {event.value}")
     elif event.type == "response":
         print(f"[response] {event.value}")
+    elif event.type == "retry":
+        print(f"[retry] {event.value}")
     elif event.type == "error":
         print(f"[error] {event.value}")

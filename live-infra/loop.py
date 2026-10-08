@@ -314,6 +314,10 @@ def run_user_turn_open(generate, messages, user_text, ecg_handle, tools, emit, m
     while True:
         model_output_str = generate(messages)
         emit(Event("generation", model_output_str))
+        if not model_output_str:
+            emit(Event("retry", "empty generation"))
+            model_output_str = generate(messages)
+            emit(Event("generation", model_output_str))
         parsed_turn = parse_generated_response(model_output_str)
         emit(Event("parse", parsed_turn))
         emit(Event("action", parsed_turn['action']))
