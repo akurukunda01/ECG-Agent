@@ -1,9 +1,9 @@
 """
 Preprocess PTB-XL records500 into 10-s .mat files for the fairseq-signals diagnosis
-fine-tune. Adapted from src/preprocess/preprocess_ptbxl.py: adds --csv-dir and embeds a
+fine-tune. Adapted from preprocess_ptbxl.py: adds --csv-dir and embeds a
 71-dim multi-hot SCP-code `label` in each file.
 
-Usage: python stage2_preprocess_ptbxl_diagnosis.py <records500 dir> --dest <out dir> --csv-dir <dir with ptbxl_database.csv + scp_statements.csv>
+Usage: python preprocess_ptbxl_labeled.py <records500 dir> --dest <out dir> --csv-dir <dir with ptbxl_database.csv + scp_statements.csv>
 """
 import argparse
 import ast
